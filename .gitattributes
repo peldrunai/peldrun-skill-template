@@ -1,0 +1,28 @@
+# Enforce LF line endings for text files
+* text=auto eol=lf
+
+# Explicitly mark binary files
+*.zip binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+
+# Python files are always text
+*.py text eol=lf
+*.pyw text eol=lf
+
+# JSON and YAML are text
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+
+# Markdown is text
+*.md text eol=lf
+
+# Shell scripts
+*.sh text eol=lf
+
+# Workflow files
+.github/** text eol=lf

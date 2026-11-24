@@ -1,0 +1,180 @@
+# Release automation workflow for PELDRUN skills.
+#
+# Triggered automatically when a tag is pushed matching one of these patterns:
+#   - v<major>.<minor>.<patch>           (single-skill repo)
+#   - <skill_id>-v<major>.<minor>.<patch> (multi-skill repo)
+#
+# Examples:
+#   git tag -a v1.0.0 -m "Release v1.0.0"
+#   git tag -a pdf_document-v1.2.3 -m "Release pdf_document v1.2.3"
+#
+# Steps:
+#   1. Parse the tag to determine skill_id and version
+#   2. Verify tag version matches manifest.json version
+#   3. Build the ZIP package
+#   4. Verify the ZIP passes all install-time checks
+#   5. Generate catalog-entry.json with SHA-256 checksum
+#   6. Create GitHub Release with ZIP + catalog entry attached
+#
+# Security:
+#   The catalog entry includes the SHA-256 of the ZIP, which PELDRUN
+#   verifies at install time to prevent supply-chain attacks.
+
+name: Release Skill
+
+on:
+  push:
+    tags:
+      - "v*"
+      - "*-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install jsonschema==4.23.0 pyyaml==6.0.2
+
+      - name: Parse tag
+        id: parse
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          echo "Parsing tag: $TAG"
+
+          # Multi-skill pattern: <skill_id>-v<version>
+          if [[ "$TAG" =~ ^([a-z0-9][a-z0-9_]*)-v([0-9]+\.[0-9]+\.[0-9]+.*)$ ]]; then
+            SKILL_ID="${BASH_REMATCH[1]}"
+            VERSION="${BASH_REMATCH[2]}"
+            SKILL_PATH="skills/${SKILL_ID}"
+            IS_MULTI="true"
+          # Single-skill pattern: v<version>
+          elif [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+.*)$ ]]; then
+            VERSION="${BASH_REMATCH[1]}"
+            SKILL_PATH="."
+            IS_MULTI="false"
+            # Extract skill_id from manifest at root
+            if [ -f "manifest.json" ]; then
+              SKILL_ID=$(python -c "import json; print(json.load(open('manifest.json'))['id'])")
+            else
+              echo "::error::Single-skill repo requires manifest.json at root"
+              exit 1
+            fi
+          else
+            echo "::error::Tag '$TAG' does not match expected patterns (v* or *-v*)"
+            exit 1
+          fi
+
+          echo "skill_id=$SKILL_ID" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "skill_path=$SKILL_PATH" >> $GITHUB_OUTPUT
+          echo "is_multi=$IS_MULTI" >> $GITHUB_OUTPUT
+          echo "Parsed: skill_id=$SKILL_ID, version=$VERSION, path=$SKILL_PATH"
+
+      - name: Verify version matches manifest
+        run: |
+          set -euo pipefail
+          MANIFEST_PATH="${{ steps.parse.outputs.skill_path }}/manifest.json"
+          if [ ! -f "$MANIFEST_PATH" ]; then
+            echo "::error::Manifest not found at $MANIFEST_PATH"
+            exit 1
+          fi
+
+          MANIFEST_VERSION=$(python -c "import json; print(json.load(open('$MANIFEST_PATH'))['version'])")
+          TAG_VERSION="${{ steps.parse.outputs.version }}"
+
+          if [ "$MANIFEST_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Version mismatch: manifest has '$MANIFEST_VERSION' but tag is '$TAG_VERSION'"
+            echo "::error::Please update manifest.json or create the correct tag"
+            exit 1
+          fi
+
+          echo "Version verified: $MANIFEST_VERSION"
+
+      - name: Validate manifest
+        run: python scripts/validate_manifest.py "${{ steps.parse.outputs.skill_id }}"
+
+      - name: Build package
+        run: python scripts/build_package.py "${{ steps.parse.outputs.skill_id }}" --verify
+
+      - name: Generate catalog entry
+        id: catalog
+        run: |
+          set -euo pipefail
+          SKILL_ID="${{ steps.parse.outputs.skill_id }}"
+          VERSION="${{ steps.parse.outputs.version }}"
+          ZIP_NAME="${SKILL_ID}-${VERSION}.zip"
+          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${ZIP_NAME}"
+
+          python scripts/generate_catalog_entry.py \
+            --skill "$SKILL_ID" \
+            --zip "dist/${ZIP_NAME}" \
+            --download-url "$DOWNLOAD_URL" \
+            --repo "https://github.com/${{ github.repository }}"
+
+          echo "catalog_entry=dist/${SKILL_ID}-catalog-entry.json" >> $GITHUB_OUTPUT
+          echo "zip_path=dist/${ZIP_NAME}" >> $GITHUB_OUTPUT
+          echo "Generated catalog entry with SHA-256 checksum"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.catalog.outputs.zip_path }}
+            ${{ steps.catalog.outputs.catalog_entry }}
+          generate_release_notes: true
+          name: "${{ steps.parse.outputs.skill_id }} v${{ steps.parse.outputs.version }}"
+          body: |
+            ## PELDRUN Skill Release
+
+            **Skill:** `${{ steps.parse.outputs.skill_id }}`
+            **Version:** `${{ steps.parse.outputs.version }}`
+
+            ### Installation
+
+            **Option A: From Catalog (recommended)**
+            The attached `catalog-entry.json` can be imported into PELDRUN's
+            skill catalog for one-click installation.
+
+            **Option B: Manual ZIP upload**
+            1. Download the attached `${{ steps.parse.outputs.skill_id }}-${{ steps.parse.outputs.version }}.zip`
+            2. Open PELDRUN -> Store -> Skills -> Install Skill (.zip)
+            3. Select the downloaded ZIP
+
+            ### Verification
+
+            The catalog entry includes the SHA-256 checksum of the ZIP.
+            PELDRUN verifies this at install time to ensure supply-chain integrity.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Release Summary
+        if: success()
+        run: |
+          echo "## Release Successful" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Skill:** \`${{ steps.parse.outputs.skill_id }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** \`${{ steps.parse.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag:** \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "- ZIP: \`${{ steps.catalog.outputs.zip_path }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Catalog entry: \`${{ steps.catalog.outputs.catalog_entry }}\`" >> $GITHUB_STEP_SUMMARY

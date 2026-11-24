@@ -1,0 +1,93 @@
+# Continuous Integration workflow for PELDRUN skill validation.
+#
+# Triggers:
+#   - Push to main branch
+#   - Pull requests targeting main
+#   - Manual dispatch (workflow_dispatch)
+#
+# This workflow validates every skill in the repository:
+#   1. Manifest.json passes JSON schema validation
+#   2. All required files exist (SKILL.md, sub-skill files)
+#   3. ZIP packages can be built without errors
+#   4. Built ZIPs pass PELDRUN's install-time verification
+#   5. No forbidden files (.exe, .pyc, symlinks, etc.) are present
+#
+# The checks mirror exactly what PELDRUN performs at install time,
+# so a skill that passes this CI will install successfully.
+
+name: Validate Skills
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate all skills
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install jsonschema==4.23.0 pyyaml==6.0.2
+
+      - name: Verify required files exist
+        run: |
+          set -euo pipefail
+          for f in manifest.schema.json scripts/validate_manifest.py scripts/build_package.py scripts/verify_package.py; do
+            if [ ! -f "$f" ]; then
+              echo "::error file=$f::Required file is missing"
+              exit 1
+            fi
+          done
+
+      - name: Validate all manifests
+        run: python scripts/validate_manifest.py --all
+
+      - name: Build all skill packages
+        run: python scripts/build_package.py --all
+
+      - name: Verify all built packages
+        run: |
+          set -euo pipefail
+          for zip in dist/*.zip; do
+            if [ -f "$zip" ]; then
+              echo "Verifying: $zip"
+              python scripts/verify_package.py "$zip"
+            fi
+          done
+
+      - name: Summary
+        if: success()
+        run: |
+          echo "## Validation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "All skills passed:" >> $GITHUB_STEP_SUMMARY
+          echo "- Manifest schema validation: **OK**" >> $GITHUB_STEP_SUMMARY
+          echo "- Package build: **OK**" >> $GITHUB_STEP_SUMMARY
+          echo "- Package verification: **OK**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Commit: \`${GITHUB_SHA::7}\`" >> $GITHUB_STEP_SUMMARY
+          ls -lh dist/*.zip 2>/dev/null | awk '{print "- " $9 " (" $5 ")"}' >> $GITHUB_STEP_SUMMARY

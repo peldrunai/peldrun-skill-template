@@ -1,0 +1,76 @@
+{
+  "schema_version": "1.0.0",
+  "id": "example_skill",
+  "version": "1.0.0",
+  "name": "Example Skill",
+  "display_name": "Example Skill",
+  "description": "A template skill demonstrating the automation workflow with sub-skills support.",
+  "short_description": "Template skill for PELDRUN automation.",
+  "store_description": "This is an example skill showing the correct structure for PELDRUN skill packages with sub-skills (router pattern) support.\n\nDelete this directory and create your own skills under `skills/`.\n\n## Features\n\n- Demonstrates router pattern with sub-skills\n- Shows proper manifest.json structure\n- Compatible with Progressive Disclosure\n- Works with the automation CI/CD pipeline",
+  "usage_notes": "This is a template skill. Delete this directory and create your own skills. Do not install this example skill in production.",
+  "tags": [
+    "example",
+    "template",
+    "demo",
+    "tutorial"
+  ],
+  "author": {
+    "name": "PELDRUN Community",
+    "url": "https://github.com/peldrunai"
+  },
+  "publisher_id": "org.peldrun.community",
+  "trust": "community",
+  "license": "MIT",
+  "homepage": "https://github.com/peldrunai/peldrun-skill-template",
+  "docs_url": "https://github.com/peldrunai/peldrun-skill-template/blob/main/README.md",
+  "release_date": "2026-11-25",
+  "stability": "stable",
+  "capabilities": {
+    "chat_invocable": true,
+    "agent_assignable": true,
+    "workflow_node": false
+  },
+  "execution": {
+    "type": "instructions",
+    "instructions_file": "SKILL.md"
+  },
+  "sub_skills": [
+    {
+      "id": "example_sub",
+      "description": "An example sub-skill demonstrating the router dispatch pattern and how to write effective instructions.",
+      "triggers": [
+        "example",
+        "demo",
+        "template",
+        "tutorial",
+        "howto",
+        "getting-started"
+      ],
+      "instructions_file": "sub_skills/example_sub/SKILL.md",
+      "capabilities": {
+        "exclusive": false
+      }
+    }
+  ],
+  "compatibility": {
+    "peldrun_min_version": "0.2.0"
+  },
+  "limits": {
+    "max_instructions_bytes": 262144
+  },
+  "user_editable": true,
+  "examples": [
+    {
+      "description": "Invoke the example skill from chat",
+      "invocation": "/example_skill",
+      "context": "User wants to see the example skill in action",
+      "expected_outcome": "Router dispatches to example_sub sub-skill and provides template guidance"
+    },
+    {
+      "description": "Ask for tutorial help",
+      "invocation": "/example_skill help me create a skill",
+      "context": "User is learning how to build skills",
+      "expected_outcome": "Sub-skill provides step-by-step creation instructions"
+    }
+  ]
+}
