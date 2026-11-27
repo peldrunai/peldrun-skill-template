@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
+# scripts/generate_catalog_entry.py
 """Generate a catalog entry JSON for a PELDRUN skill package.
 
-The generated entry is compatible with PELDRUN's skill catalog schema
-and includes the SHA-256 checksum of the ZIP for supply-chain integrity.
+The generated file is a valid PELDRUN catalog document (schema_version + items[])
+containing exactly one skill item. This matches the schema used by
+peldrun-skill-catalog/schema/catalog.schema.json and allows the import workflow
+to validate and merge the entry correctly.
 
 Usage:
     python scripts/generate_catalog_entry.py \\
@@ -21,7 +24,6 @@ Output:
     dist/<skill_id>-catalog-entry.json
 
 The entry can be:
-    - Merged into the main catalog via scripts/merge_catalog_entry.py
     - Imported automatically via the peldrun-skill-catalog import workflow
     - Attached to a GitHub Release for manual catalog updates
 
@@ -81,13 +83,13 @@ def load_manifest(skill_path: Path) -> dict[str, Any]:
     return json.loads(manifest_path.read_text(encoding="utf-8"))
 
 
-def build_catalog_entry(
+def build_catalog_item(
     manifest: dict[str, Any],
     zip_path: Path,
     download_url: str,
     repo_url: str,
 ) -> dict[str, Any]:
-    """Build a catalog entry from manifest data."""
+    """Build a single catalog item from manifest data."""
     skill_id = manifest["id"]
     version = manifest["version"]
 
@@ -99,8 +101,8 @@ def build_catalog_entry(
     has_sub_skills = len(sub_skills) > 0
     sub_skills_count = len(sub_skills)
 
-    # Build the entry (following PELDRUN catalog schema)
-    entry: dict[str, Any] = {
+    # Build the item (following PELDRUN catalog schema)
+    item: dict[str, Any] = {
         "id": skill_id,
         "name": manifest.get("name", skill_id),
         "version": version,
@@ -116,64 +118,75 @@ def build_catalog_entry(
 
     # Optional fields
     if "display_name" in manifest:
-        entry["display_name"] = manifest["display_name"]
-
-    if "short_description" in manifest:
-        entry["short_description"] = manifest["short_description"]
-
-    if "store_description" in manifest:
-        entry["store_description"] = manifest["store_description"]
-
+        item["display_name"] = manifest["display_name"]
     if "icon_svg" in manifest:
-        entry["icon"] = manifest["icon_svg"]
-        entry["icon_type"] = "svg"
+        item["icon"] = manifest["icon_svg"]
+        item["icon_type"] = "svg"
     elif "icon" in manifest:
-        entry["icon"] = manifest["icon"]
-        entry["icon_type"] = "name"
+        item["icon"] = manifest["icon"]
+        item["icon_type"] = "name"
 
     if "tags" in manifest:
-        entry["tags"] = manifest["tags"]
+        item["tags"] = manifest["tags"]
 
     if "license" in manifest:
-        entry["license"] = manifest["license"]
+        item["license"] = manifest["license"]
 
     # Author info
     author = manifest.get("author")
     if author:
-        entry["author"] = author.get("name")
-        entry["author_url"] = author.get("url")
+        item["author"] = author.get("name")
+        item["author_url"] = author.get("url")
 
-        entry["developer"] = {
+        item["developer"] = {
             "name": author.get("name"),
             "url": author.get("url"),
         }
         if author.get("email"):
-            entry["developer"]["email"] = author["email"]
+            item["developer"]["email"] = author["email"]
 
     # URLs
     if repo_url:
-        entry["repository_url"] = repo_url
-        entry["homepage"] = manifest.get("homepage", repo_url)
+        item["repository_url"] = repo_url
+        item["homepage"] = manifest.get("homepage", repo_url)
 
     if "docs_url" in manifest:
-        entry["docs_url"] = manifest["docs_url"]
+        item["docs_url"] = manifest["docs_url"]
 
     if "brand_color" in manifest:
-        entry["brand_color"] = manifest["brand_color"]
+        item["brand_color"] = manifest["brand_color"]
 
     # Deprecation info
     if manifest.get("deprecated"):
-        entry["stability"] = "deprecated"
+        item["stability"] = "deprecated"
         if "deprecation_message" in manifest:
-            entry["deprecation_message"] = manifest["deprecation_message"]
+            item["deprecation_message"] = manifest["deprecation_message"]
 
     # Install warnings
     if manifest.get("sub_skills"):
-        entry["install_warnings"] = [
+        item["install_warnings"] = [
             "This skill uses Progressive Disclosure with sub-skills."
         ]
 
-    return entry
+    return item
+
+
+def build_catalog_document(
+    item: dict[str, Any],
+    skill_id: str,
+) -> dict[str, Any]:
+    """Wrap a single catalog item in a full catalog document.
+
+    The PELDRUN catalog schema requires an object with 'schema_version'
+    and 'items'. The import workflow validates the fetched document
+    against that schema directly.
+    """
+    return {
+        "schema_version": 1,
+        "description": f"Catalog entry for skill '{skill_id}'.",
+        "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "items": [item],
+    }
 
 
 def main() -> int:
@@ -254,25 +267,27 @@ def main() -> int:
     if not repo_url and args.github_owner and args.github_repo:
         repo_url = f"https://github.com/{args.github_owner}/{args.github_repo}"
 
-    # Generate entry
+    # Generate catalog item and wrap in a catalog document
     print(f"Generating catalog entry for: {args.skill} v{version}")
     print(f"ZIP: {zip_path}")
     print(f"Download URL: {download_url}")
 
-    entry = build_catalog_entry(manifest, zip_path, download_url, repo_url)
+    item = build_catalog_item(manifest, zip_path, download_url, repo_url)
+    catalog = build_catalog_document(item, args.skill)
 
     # Write output
     output_path = args.output or (DIST_DIR / f"{args.skill}-catalog-entry.json")
     DIST_DIR.mkdir(exist_ok=True)
     output_path.write_text(
-        json.dumps(entry, indent=2, ensure_ascii=False) + "\n",
+        json.dumps(catalog, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
 
     print(f"\nGenerated: {output_path}")
-    print(f"SHA-256: {entry['checksum_sha256']}")
-    if entry.get("has_sub_skills"):
-        print(f"Sub-skills: {entry['sub_skills_count']}")
+    print(f"SHA-256: {item['checksum_sha256']}")
+    if item.get("has_sub_skills"):
+        print(f"Sub-skills: {item['sub_skills_count']}")
+    print(f"Items written: {len(catalog['items'])}")
 
     return 0
 
